@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+
+var fs = require('fs')
+  , ini = require('multi-ini')
+
+var makeBackup = true
+
+// I did try require('ini') but it didn't write back exactly what was read, notably adding additional '"'s and '\'s to the ByteArray value of header_state keys
+//
+// multi-ini surrounds every written value with quotes, but SMPlayer doesn't seem to mind this.  It removes the unnecessary ones, and ends up with a file that looks much like the original.
+// multi-ini does not write out keys with empty values, but SMPlayer restores these (although only for video files which exist).
+
+var inFile = require('os').homedir() + '/.config/smplayer/playlist.ini'
+var tmpFile = `${inFile}.NEW`
+var backupFile = `${inFile}.${new Date().toISOString().replace(/-/g, '').replace(/T/, '-').replace(/:/g, '').replace(/[.].*/, '')}`
+
+var config = ini.read(inFile, 'utf-8')
+//console.log('config:', config)
+
+// The keys looke like this:
+//     items\1\item_0_duration
+//     items\1\item_0_filename
+//     items\1\item_0_name
+//     items\1\item_0_params
+//     items\1\item_0_shuffle
+// They cotain two numbers, the first always one larger than the second.
+
+var keysToKeep = []
+
+for (var key in config.playlist_contents) {
+  if (key.startsWith('items\\') && key.endsWith('_filename')) {
+    var filename = config.playlist_contents[key]
+    if (!fs.existsSync(filename)) {
+      //console.log('filename:', filename)
+      var keyNum = key.replace(/.*_([0-9]*)_filename$/, '$1')
+      console.log(`Removing missing file ${keyNum}: ${filename}`)
+      // Remove all keys matching this one
+      var prefix = key.replace(/_filename$/, '')
+      //console.log('prefix:', prefix)
+      //console.log(`Removing entry: ${prefix}`)
+      for (var key2 in config.playlist_contents) {
+        if (key2.startsWith(prefix + '_')) {
+          //console.log('key2:', key2)
+          delete config.playlist_contents[key2]
+        }
+      }
+    } else {
+      // We will keep this one
+      var keyNum = key.replace(/.*_([0-9]*)_filename$/, '$1')
+      //console.log('keyNum:', keyNum)
+      keysToKeep.push(keyNum)
+    }
+  }
+}
+
+// Now the keys which we are going to keep need to be renumbered (to fill in the gaps we created)
+keysToKeep.sort((a, b) => Number(a) - Number(b))
+//console.log('keysToKeep:', keysToKeep)
+// After renaming a key, we don't copy immediately into the existing object, because due to ordering we may overwrite an existing key!
+// Instead we collect all the new key-value pairs, and only copy them over at the end.
+var newData = {}
+for (var key in config.playlist_contents) {
+  var keyNum = key.replace(/.*_([0-9]*)_\w*/, '$1')
+  var newIndex = keysToKeep.indexOf(keyNum)
+  //console.log(`${keyNum} -> ${newIndex}`)
+  if (newIndex >= 0) {
+    var arr1 = key.split('\\')
+    arr1[1] = String(newIndex + 1)
+    var arr2 = arr1.join('\\').split('_')
+    arr2[1] = String(newIndex)
+    var newKey = arr2.join('_')
+    //console.log(`${key} -> ${newKey}`)
+    newData[newKey] = config.playlist_contents[key]
+    delete config.playlist_contents[key]
+  }
+}
+for (var key in newData) {
+  config.playlist_contents[key] = newData[key]
+}
+
+// The original ini had `items\size=1311`
+// Although curiously there were more items listed in the ini file
+// Anyway this is the number that SMPlayer shows in its playlist
+config.playlist_contents['items\\size'] = String(keysToKeep.length)
+console.log('Remaining entries:', keysToKeep.length)
+
+ini.write(tmpFile, config)
+
+if (makeBackup) {
+  fs.copyFileSync(inFile, backupFile)
+}
+
+fs.renameSync(tmpFile, inFile)
+
