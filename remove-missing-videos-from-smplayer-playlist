@@ -4,6 +4,10 @@ var fs = require('fs')
   , ini = require('multi-ini')
 
 var makeBackup = true
+var removeMissingFiles = true
+var removeEarlierDuplicates = true
+var removeLaterDuplicates = false
+// BUG: Because we process the items in string-order rather than numeric order, we will sometimes be incorrect about which entry is earlier/later
 
 // I did try require('ini') but it didn't write back exactly what was read, notably adding additional '"'s and '\'s to the ByteArray value of header_state keys
 //
@@ -25,35 +29,77 @@ var config = ini.read(inFile, 'utf-8')
 //     items\1\item_0_shuffle
 // They cotain two numbers, the first always one larger than the second.
 
+// There may be entries in the playlist beyond the numItems, which SMPlayer does not actually show
+// We had better ignore these
+var numItems = Number(config.playlist_contents['items\\size'])
+//console.log('numItems:', numItems)
+
 var keysToKeep = []
 
+var earlierPrefixesByFilename = {}
+
+// Unfortunately because keys are string-indexed, we will not be processing them in numerical order
 for (var key in config.playlist_contents) {
   if (key.startsWith('items\\') && key.endsWith('_filename')) {
+    var prefix = key.replace(/_filename$/, '')
+    var keyNum = getKeyNumFromPrefix(prefix)
     var filename = config.playlist_contents[key]
-    if (!fs.existsSync(filename)) {
-      //console.log('filename:', filename)
-      var keyNum = key.replace(/.*_([0-9]*)_filename$/, '$1')
+    //console.log('[%s] %s:', keyNum, filename)
+
+    if (Number(keyNum) >= numItems) {
+      // This is stored in the array but its not one of those SMPlayer is actually showing.
+      // We had better skip it, otherwise it might be detected as a later duplicate, producing unexpected results.
+      continue
+    }
+
+    var keepThisOne
+
+    if (removeMissingFiles && !fs.existsSync(filename)) {
       console.log(`Removing missing file ${keyNum}: ${filename}`)
-      // Remove all keys matching this one
-      var prefix = key.replace(/_filename$/, '')
-      //console.log('prefix:', prefix)
-      //console.log(`Removing entry: ${prefix}`)
-      for (var key2 in config.playlist_contents) {
-        if (key2.startsWith(prefix + '_')) {
-          //console.log('key2:', key2)
-          delete config.playlist_contents[key2]
-        }
-      }
+      keepThisOne = false
+    } else if (removeEarlierDuplicates && earlierPrefixesByFilename[filename]) {
+      var earlierPrefix = earlierPrefixesByFilename[filename]
+      var earlierKeyNum = getKeyNumFromPrefix(earlierPrefix)
+      console.log(`Removing earlier duplicate ${earlierKeyNum}: ${filename}`)
+      keysToKeep = keysToKeep.filter(keyN => keyN !== earlierKeyNum)
+      removeEntryWithPrefix(earlierPrefix)
+      keepThisOne = true
+    } else if (removeLaterDuplicates && earlierPrefixesByFilename[filename]) {
+      console.log(`Removing later duplicate ${keyNum}: ${filename}`)
+      keepThisOne = false
     } else {
       // We will keep this one
-      var keyNum = key.replace(/.*_([0-9]*)_filename$/, '$1')
+      keepThisOne = true
+    }
+
+    if (keepThisOne) {
       //console.log('keyNum:', keyNum)
       keysToKeep.push(keyNum)
+      earlierPrefixesByFilename[filename] = prefix
+    } else {
+      removeEntryWithPrefix(prefix)
+    }
+  }
+}
+
+function getKeyNumFromPrefix(prefix) {
+  return prefix.replace(/.*_([0-9]*)$/, '$1')
+}
+
+function removeEntryWithPrefix(prefix) {
+  // Remove all keys matching this one
+  //console.log('prefix:', prefix)
+  //console.log(`Removing entry: ${prefix}`)
+  for (var key2 in config.playlist_contents) {
+    if (key2.startsWith(prefix + '_')) {
+      //console.log('Deleting', key2)
+      delete config.playlist_contents[key2]
     }
   }
 }
 
 // Now the keys which we are going to keep need to be renumbered (to fill in the gaps we created)
+// First we must sort the keys numerically, because they are strings (currently "10" is actually coming before "2")
 keysToKeep.sort((a, b) => Number(a) - Number(b))
 //console.log('keysToKeep:', keysToKeep)
 // After renaming a key, we don't copy immediately into the existing object, because due to ordering we may overwrite an existing key!
