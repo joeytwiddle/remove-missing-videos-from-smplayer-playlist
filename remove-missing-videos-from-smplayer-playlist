@@ -36,7 +36,7 @@ var numItems = Number(config.playlist_contents['items\\size'])
 
 var keysToKeep = []
 
-var earlierPrefixesByFilename = {}
+var earlierPrefixesByRealpath = {}
 
 // Initially we looped the keys like this
 // Unfortunately because keys are string-indexed, we will not be processing them in numerical order
@@ -54,6 +54,8 @@ for (var i = 0; i < numItems; i++) {
     var filename = config.playlist_contents[keyForFilename]
     //console.log('[%s] %s:', keyNum, filename)
 
+    const realpath = fs.existsSync(filename) ? fs.realpathSync(filename) : filename
+
     if (Number(keyNum) >= numItems) {
       // This is stored in the array but its not one of those SMPlayer is actually showing.
       // We had better skip it, otherwise it might be detected as a later duplicate, producing unexpected results.
@@ -65,14 +67,17 @@ for (var i = 0; i < numItems; i++) {
     if (removeMissingFiles && !fs.existsSync(filename)) {
       console.log(`Removing missing file ${keyNum}: ${filename}`)
       keepThisOne = false
-    } else if (removeEarlierDuplicates && earlierPrefixesByFilename[filename]) {
-      var earlierPrefix = earlierPrefixesByFilename[filename]
+    } else if (removeMissingFiles && fs.existsSync(filename) && fs.statSync(filename).size === 0) {
+      console.log(`Removing empty file ${keyNum}: ${filename}`)
+      keepThisOne = false
+    } else if (removeEarlierDuplicates && earlierPrefixesByRealpath[realpath]) {
+      var earlierPrefix = earlierPrefixesByRealpath[realpath]
       var earlierKeyNum = getKeyNumFromPrefix(earlierPrefix)
       console.log(`Removing earlier duplicate ${earlierKeyNum}: ${filename}`)
       keysToKeep = keysToKeep.filter(keyN => keyN !== earlierKeyNum)
       removeEntryWithPrefix(earlierPrefix)
       keepThisOne = true
-    } else if (removeLaterDuplicates && earlierPrefixesByFilename[filename]) {
+    } else if (removeLaterDuplicates && earlierPrefixesByRealpath[realpath]) {
       console.log(`Removing later duplicate ${keyNum}: ${filename}`)
       keepThisOne = false
     } else {
@@ -83,7 +88,7 @@ for (var i = 0; i < numItems; i++) {
     if (keepThisOne) {
       //console.log('keyNum:', keyNum)
       keysToKeep.push(keyNum)
-      earlierPrefixesByFilename[filename] = prefix
+      earlierPrefixesByRealpath[realpath] = prefix
     } else {
       removeEntryWithPrefix(prefix)
     }
